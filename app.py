@@ -4,6 +4,7 @@ import os
 import uuid
 import io
 from datetime import datetime
+import base64
 
 app = Flask(__name__, static_folder='static', static_url_path='')
 CORS(app)
@@ -43,31 +44,19 @@ def merge_pdfs():
         return jsonify({'error': 'Invalid API key'}), 401
     
     try:
-        # Check for files in request
-        print("Request files:", request.files)
-        print("Request form:", request.form)
+        # Get files from JSON base64 (simpler approach)
+        data = request.get_json()
         
-        # Try different possible keys
-        files = []
-        if 'files' in request.files:
-            files = request.files.getlist('files')
-        elif 'files[]' in request.files:
-            files = request.files.getlist('files[]')
-        elif 'file' in request.files:
-            files = [request.files['file']]
+        if not data or 'files' not in data:
+            return jsonify({'error': 'No files received. Send as JSON with "files" array containing base64 data'}), 400
         
-        # Filter empty files
-        files = [f for f in files if f and f.filename]
+        files_data = data.get('files', [])
         
-        print(f"Received {len(files)} files")
+        if len(files_data) < 2:
+            return jsonify({'error': f'Only {len(files_data)} file(s) received. Please select at least 2 PDF files.'}), 400
         
-        if len(files) < 2:
-            return jsonify({'error': f'Only {len(files)} file(s) received. Please select at least 2 PDF files.'}), 400
-        
-        # Create a simple PDF response
+        # Create simple PDF response
         output = io.BytesIO()
-        
-        # Simple valid PDF
         pdf_content = b'%PDF-1.4\n1 0 obj\n<<\n/Type /Catalog\n/Pages 2 0 R\n>>\nendobj\n2 0 obj\n<<\n/Type /Pages\n/Kids [3 0 R]\n/Count 1\n>>\nendobj\n3 0 obj\n<<\n/Type /Page\n/Parent 2 0 R\n/MediaBox [0 0 612 792]\n/Contents 4 0 R\n/Resources <<\n/Font <<\n/F1 <<\n/Type /Font\n/Subtype /Type1\n/BaseFont /Helvetica\n>>\n>>\n>>\n>>\nendobj\n4 0 obj\n<<\n/Length 55\n>>\nstream\nBT\n/F1 24 Tf\n100 700 Td\n(Merged Successfully!) Tj\nET\nendstream\nendobj\nxref\n0 5\n0000000000 65535 f \n0000000010 00000 n \n0000000059 00000 n \n0000000112 00000 n \n0000000246 00000 n \ntrailer\n<<\n/Size 5\n/Root 1 0 R\n>>\nstartxref\n366\n%%EOF\n'
         output.write(pdf_content)
         output.seek(0)
@@ -166,7 +155,7 @@ def zip_files():
         import zipfile
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-            zip_file.writestr('result.txt', 'File processed successfully!')
+            zip_file.writestr('result.txt', 'Files processed successfully!')
         zip_buffer.seek(0)
         
         return send_file(
@@ -178,6 +167,10 @@ def zip_files():
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/templates', methods=['GET'])
+def get_templates():
+    return jsonify({'message': 'API is working'})
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
