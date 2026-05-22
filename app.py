@@ -1,16 +1,44 @@
-from flask import Flask, send_from_directory, jsonify, request, Response
+from flask import Flask, send_from_directory, jsonify, request, Response, send_file
 from flask_cors import CORS
 import os
 import uuid
-import json
-from datetime import datetime
 import io
+import re
+from datetime import datetime
+from werkzeug.utils import secure_filename
+import tempfile
+import zipfile
+
+# PDF processing libraries
+try:
+    from PyPDF2 import PdfReader, PdfWriter
+    PDF_SUPPORT = True
+except ImportError:
+    PDF_SUPPORT = False
+    print("PyPDF2 not installed. Install with: pip install PyPDF2")
 
 app = Flask(__name__, static_folder='static', static_url_path='')
-CORS(app)  # Enable CORS for all routes
+CORS(app)
 
-# Store API keys (in production, use database)
+# Store API keys
 api_keys = {}
+UPLOAD_FOLDER = tempfile.gettempdir()
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max
+
+def build_cors_response():
+    response = Response()
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type, X-API-Key')
+    response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    return response
+
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type, X-API-Key')
+    response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    return response
 
 @app.route('/')
 def serve_index():
@@ -20,7 +48,12 @@ def serve_index():
 def health_check():
     if request.method == 'OPTIONS':
         return build_cors_response()
-    return jsonify({'status': 'healthy', 'timestamp': datetime.now().isoformat(), 'message': 'Reyansh API is running!'})
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat(),
+        'pdf_support': PDF_SUPPORT,
+        'message': 'Reyansh API is running!'
+    })
 
 @app.route('/api/generate-key', methods=['POST', 'OPTIONS'])
 def generate_api_key():
@@ -38,76 +71,57 @@ def generate_api_key():
         }
         return jsonify({
             'success': True,
-            'api_key': api_key, 
-            'machine_id': machine_id,
-            'message': 'API Key generated successfully'
+            'api_key': api_key,
+            'machine_id': machine_id
         })
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'error': str(e)}), 500
 
-@app.route('/api/validate-key', methods=['POST', 'OPTIONS'])
 def validate_api_key():
-    if request.method == 'OPTIONS':
-        return build_cors_response()
-    
     api_key = request.headers.get('X-API-Key')
-    if api_key and api_key in api_keys:
-        api_keys[api_key]['usage_count'] += 1
-        return jsonify({'valid': True, 'usage_count': api_keys[api_key]['usage_count']})
-    return jsonify({'valid': False}), 401
-
-@app.route('/api/templates', methods=['GET', 'OPTIONS'])
-def get_templates():
-    if request.method == 'OPTIONS':
-        return build_cors_response()
-    
-    base_url = request.host_url.rstrip('/')
-    templates = {
-        'merge': f'''curl -X POST {base_url}/api/merge \\
-  -H "X-API-Key: YOUR_API_KEY" \\
-  -F "files[]=@document1.pdf" \\
-  -F "files[]=@document2.pdf"''',
-        'split': f'''curl -X POST {base_url}/api/split \\
-  -H "X-API-Key: YOUR_API_KEY" \\
-  -F "file=@document.pdf" \\
-  -F "ranges=1-3,5,7-9"''',
-        'zip': f'''curl -X POST {base_url}/api/zip \\
-  -H "X-API-Key: YOUR_API_KEY" \\
-  -F "files[]=@file1.txt" \\
-  -F "files[]=@file2.jpg"''',
-        'unlock': f'''curl -X POST {base_url}/api/unlock \\
-  -H "X-API-Key: YOUR_API_KEY" \\
-  -F "file=@secured.pdf" \\
-  -F "password=mypassword"''',
-        'lock': f'''curl -X POST {base_url}/api/lock \\
-  -H "X-API-Key: YOUR_API_KEY" \\
-  -F "file=@document.pdf" \\
-  -F "password=newpassword"'''
-    }
-    return jsonify(templates)
+    if not api_key or api_key not in api_keys:
+        return False
+    api_keys[api_key]['usage_count'] += 1
+    return True
 
 @app.route('/api/merge', methods=['POST', 'OPTIONS'])
 def merge_pdfs():
     if request.method == 'OPTIONS':
         return build_cors_response()
     
-    # Validate API key
-    api_key = request.headers.get('X-API-Key')
-    if not api_key or api_key not in api_keys:
-        return jsonify({'error': 'Invalid or missing API key'}), 401
+    if not validate_api_key():
+        return jsonify({'error': 'Invalid API key'}), 401
+    
+    if not PDF_SUPPORT:
+        return jsonify({'error': 'PDF processing library not installed. Please install PyPDF2'}), 500
     
     try:
         files = request.files.getlist('files[]')
         if len(files) < 2:
             return jsonify({'error': 'Please select at least 2 PDF files'}), 400
         
-        # Here you would implement actual PDF merging
-        # For now, return success message
-        return jsonify({
-            'success': True,
-            'message': f'Merge request received for {len(files)} files',
-            'files': [f.filename for f in files]
-        })
+        # Create PDF writer
+        merger = PdfWriter()
+        
+        for file in files:
+            if file and file.filename.endswith('.pdf'):
+                pdf_reader = PdfReader(file)
+                for page in pdf_reader.pages:
+                    merger.add_page(page)
+        
+        # Save merged PDF to bytes
+        output = io.BytesIO()
+        merger.write(output)
+        output.seek(0)
+        
+        # Return as file download
+        return send_file(
+            output,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=f'merged_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pdf'
+        )
+        
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -116,10 +130,11 @@ def split_pdf():
     if request.method == 'OPTIONS':
         return build_cors_response()
     
-    # Validate API key
-    api_key = request.headers.get('X-API-Key')
-    if not api_key or api_key not in api_keys:
-        return jsonify({'error': 'Invalid or missing API key'}), 401
+    if not validate_api_key():
+        return jsonify({'error': 'Invalid API key'}), 401
+    
+    if not PDF_SUPPORT:
+        return jsonify({'error': 'PDF processing library not installed'}), 500
     
     try:
         file = request.files.get('file')
@@ -130,10 +145,42 @@ def split_pdf():
         if not ranges:
             return jsonify({'error': 'Please provide page ranges'}), 400
         
-        return jsonify({
-            'success': True,
-            'message': f'Split request received for {file.filename} with ranges: {ranges}'
-        })
+        pdf_reader = PdfReader(file)
+        total_pages = len(pdf_reader.pages)
+        
+        # Parse page ranges (e.g., "1-3,5,7-9")
+        page_indices = []
+        for part in ranges.split(','):
+            part = part.strip()
+            if '-' in part:
+                start, end = map(int, part.split('-'))
+                for p in range(start - 1, min(end, total_pages)):
+                    if 0 <= p < total_pages:
+                        page_indices.append(p)
+            else:
+                p = int(part) - 1
+                if 0 <= p < total_pages:
+                    page_indices.append(p)
+        
+        if not page_indices:
+            return jsonify({'error': 'No valid pages found'}), 400
+        
+        # Create new PDF with selected pages
+        writer = PdfWriter()
+        for idx in page_indices:
+            writer.add_page(pdf_reader.pages[idx])
+        
+        output = io.BytesIO()
+        writer.write(output)
+        output.seek(0)
+        
+        return send_file(
+            output,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=f'split_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pdf'
+        )
+        
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -142,17 +189,30 @@ def zip_files():
     if request.method == 'OPTIONS':
         return build_cors_response()
     
-    # Validate API key
-    api_key = request.headers.get('X-API-Key')
-    if not api_key or api_key not in api_keys:
-        return jsonify({'error': 'Invalid or missing API key'}), 401
+    if not validate_api_key():
+        return jsonify({'error': 'Invalid API key'}), 401
     
     try:
         files = request.files.getlist('files[]')
-        return jsonify({
-            'success': True,
-            'message': f'Zip request received for {len(files)} files'
-        })
+        if not files:
+            return jsonify({'error': 'No files uploaded'}), 400
+        
+        # Create ZIP in memory
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            for file in files:
+                if file and file.filename:
+                    zip_file.writestr(secure_filename(file.filename), file.read())
+        
+        zip_buffer.seek(0)
+        
+        return send_file(
+            zip_buffer,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name=f'archive_{datetime.now().strftime("%Y%m%d_%H%M%S")}.zip'
+        )
+        
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -161,10 +221,11 @@ def unlock_pdf():
     if request.method == 'OPTIONS':
         return build_cors_response()
     
-    # Validate API key
-    api_key = request.headers.get('X-API-Key')
-    if not api_key or api_key not in api_keys:
-        return jsonify({'error': 'Invalid or missing API key'}), 401
+    if not validate_api_key():
+        return jsonify({'error': 'Invalid API key'}), 401
+    
+    if not PDF_SUPPORT:
+        return jsonify({'error': 'PDF processing library not installed'}), 500
     
     try:
         file = request.files.get('file')
@@ -175,10 +236,31 @@ def unlock_pdf():
         if not password:
             return jsonify({'error': 'Password is required'}), 400
         
-        return jsonify({
-            'success': True,
-            'message': f'Unlock request received for {file.filename}'
-        })
+        # Try to decrypt PDF
+        pdf_reader = PdfReader(file)
+        
+        if pdf_reader.is_encrypted:
+            try:
+                pdf_reader.decrypt(password)
+            except:
+                return jsonify({'error': 'Wrong password or file cannot be decrypted'}), 400
+        
+        # Create unlocked PDF
+        writer = PdfWriter()
+        for page in pdf_reader.pages:
+            writer.add_page(page)
+        
+        output = io.BytesIO()
+        writer.write(output)
+        output.seek(0)
+        
+        return send_file(
+            output,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=f'unlocked_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pdf'
+        )
+        
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -187,10 +269,11 @@ def lock_pdf():
     if request.method == 'OPTIONS':
         return build_cors_response()
     
-    # Validate API key
-    api_key = request.headers.get('X-API-Key')
-    if not api_key or api_key not in api_keys:
-        return jsonify({'error': 'Invalid or missing API key'}), 401
+    if not validate_api_key():
+        return jsonify({'error': 'Invalid API key'}), 401
+    
+    if not PDF_SUPPORT:
+        return jsonify({'error': 'PDF processing library not installed'}), 500
     
     try:
         file = request.files.get('file')
@@ -201,28 +284,44 @@ def lock_pdf():
         if not password:
             return jsonify({'error': 'Password is required'}), 400
         
-        return jsonify({
-            'success': True,
-            'message': f'Lock request received for {file.filename} with password'
-        })
+        # Read original PDF
+        pdf_reader = PdfReader(file)
+        
+        # Create encrypted PDF (Note: PyPDF2 encryption is basic)
+        writer = PdfWriter()
+        for page in pdf_reader.pages:
+            writer.add_page(page)
+        
+        # Add encryption
+        writer.encrypt(password)
+        
+        output = io.BytesIO()
+        writer.write(output)
+        output.seek(0)
+        
+        return send_file(
+            output,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=f'locked_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pdf'
+        )
+        
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-def build_cors_response():
-    """Build CORS response for OPTIONS requests"""
-    response = Response()
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type, X-API-Key')
-    response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-    return response
-
-# Add CORS headers to all responses
-@app.after_request
-def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type, X-API-Key')
-    response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-    return response
+@app.route('/api/templates', methods=['GET', 'OPTIONS'])
+def get_templates():
+    if request.method == 'OPTIONS':
+        return build_cors_response()
+    
+    base_url = request.host_url.rstrip('/')
+    return jsonify({
+        'merge': f'POST {base_url}/api/merge',
+        'split': f'POST {base_url}/api/split',
+        'zip': f'POST {base_url}/api/zip',
+        'unlock': f'POST {base_url}/api/unlock',
+        'lock': f'POST {base_url}/api/lock'
+    })
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
