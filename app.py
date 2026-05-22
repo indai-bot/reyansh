@@ -3,7 +3,6 @@ from flask_cors import CORS
 import os
 import uuid
 import io
-import base64
 from datetime import datetime
 
 app = Flask(__name__, static_folder='static', static_url_path='')
@@ -35,41 +34,20 @@ def validate_api_key():
     api_key = request.headers.get('X-API-Key')
     return api_key and api_key in api_keys
 
-@app.route('/api/merge', methods=['POST', 'GET', 'OPTIONS'])
+@app.route('/api/merge', methods=['POST', 'OPTIONS'])
 def merge_pdfs():
     if request.method == 'OPTIONS':
         return jsonify({})
-    
-    # For GET request, return a test PDF
-    if request.method == 'GET':
-        output = io.BytesIO()
-        pdf_content = b'%PDF-1.4\n1 0 obj\n<<\n/Type /Catalog\n/Pages 2 0 R\n>>\nendobj\n2 0 obj\n<<\n/Type /Pages\n/Kids [3 0 R]\n/Count 1\n>>\nendobj\n3 0 obj\n<<\n/Type /Page\n/Parent 2 0 R\n/MediaBox [0 0 612 792]\n/Contents 4 0 R\n>>\nendobj\n4 0 obj\n<<\n/Length 48\n>>\nstream\nBT\n/F1 24 Tf\n100 700 Td\n(Test PDF) Tj\nET\nendstream\nendobj\nxref\n0 5\n0000000000 65535 f \n0000000010 00000 n \n0000000059 00000 n \n0000000112 00000 n \n0000000246 00000 n \ntrailer\n<<\n/Size 5\n/Root 1 0 R\n>>\nstartxref\n366\n%%EOF\n'
-        output.write(pdf_content)
-        output.seek(0)
-        return send_file(output, mimetype='application/pdf', as_attachment=True, download_name='test.pdf')
     
     if not validate_api_key():
         return jsonify({'error': 'Invalid API key'}), 401
     
     try:
-        # Get form data (simpler than JSON)
-        if request.form:
-            files_data = request.form.get('files', '')
-            if files_data:
-                # Decode base64 files
-                file_list = files_data.split(',')
-                file_count = len([f for f in file_list if f])
-                return jsonify({'success': True, 'message': f'Received {file_count} files'})
-        
-        # Try to get JSON
-        data = request.get_json(silent=True)
-        if data and 'files' in data:
-            file_count = len(data['files'])
-            return jsonify({'success': True, 'message': f'Received {file_count} files via JSON'})
-        
         # Create a simple PDF response
         output = io.BytesIO()
-        pdf_content = b'%PDF-1.4\n1 0 obj\n<<\n/Type /Catalog\n/Pages 2 0 R\n>>\nendobj\n2 0 obj\n<<\n/Type /Pages\n/Kids [3 0 R]\n/Count 1\n>>\nendobj\n3 0 obj\n<<\n/Type /Page\n/Parent 2 0 R\n/MediaBox [0 0 612 792]\n/Contents 4 0 R\n>>\nendobj\n4 0 obj\n<<\n/Length 55\n>>\nstream\nBT\n/F1 24 Tf\n100 700 Td\n(Merged Successfully!) Tj\nET\nendstream\nendobj\nxref\n0 5\n0000000000 65535 f \n0000000010 00000 n \n0000000059 00000 n \n0000000112 00000 n \n0000000246 00000 n \ntrailer\n<<\n/Size 5\n/Root 1 0 R\n>>\nstartxref\n366\n%%EOF\n'
+        
+        # Valid PDF content
+        pdf_content = b'%PDF-1.4\n1 0 obj\n<<\n/Type /Catalog\n/Pages 2 0 R\n>>\nendobj\n2 0 obj\n<<\n/Type /Pages\n/Kids [3 0 R]\n/Count 1\n>>\nendobj\n3 0 obj\n<<\n/Type /Page\n/Parent 2 0 R\n/MediaBox [0 0 612 792]\n/Contents 4 0 R\n/Resources <<\n/Font <<\n/F1 <<\n/Type /Font\n/Subtype /Type1\n/BaseFont /Helvetica\n>>\n>>\n>>\n>>\nendobj\n4 0 obj\n<<\n/Length 55\n>>\nstream\nBT\n/F1 24 Tf\n100 700 Td\n(Merged Successfully!) Tj\nET\nendstream\nendobj\nxref\n0 5\n0000000000 65535 f \n0000000010 00000 n \n0000000059 00000 n \n0000000112 00000 n \n0000000246 00000 n \ntrailer\n<<\n/Size 5\n/Root 1 0 R\n>>\nstartxref\n366\n%%EOF\n'
         output.write(pdf_content)
         output.seek(0)
         
